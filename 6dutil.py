@@ -293,7 +293,7 @@ class Canon6DConnector:
         self.connections = []
 
     def connect(self, ip, guid):
-        connection = Canon6DConnection(ip, guid, callback)
+        connection = Canon6DConnection(ip, guid, self.callback)
         connection.start()
         self.connections.append(connection)
 
@@ -331,7 +331,7 @@ class Canon6DConnector:
         sys.exit(0)
 
 def camera_main(camera):
-    pass
+    print 'camera_main', camera.guid
 
 def main(args):
     connector = Canon6DConnector(camera_main)
