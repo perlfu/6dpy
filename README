@@ -1,0 +1,22 @@
+6dpy 
+----
+
+6dpy is a small harness to simplify Python scripting operations on a 
+Canon 6D DSLR camera via PTP/IP and WLAN/Wifi.  It may also be useful
+for other PTP/IP cameras with some minor modifications.
+
+The harness deals with locating and connecting to cameras. MDNS is used to 
+search for the camera(s) in EOS Utility mode.  A connection is then 
+established using libgphoto2's PTP/IP code and passed to user code.
+
+Canon's PTP/IP authentication is bypassed using the GUID decoding 
+technique documented by Daniel Mende in his talk Paparazzi over IP. 
+
+Requirements:
+ * pybonjour (https://code.google.com/p/pybonjour/)
+ * libgphoto2 (http://www.gphoto.org)
+
+All harness code is contained in 6d.py.
+Other Python scripts demonstrate usage.
+
+- Carl Ritson <critson@perlfu.co.uk>
