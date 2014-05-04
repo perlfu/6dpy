@@ -3,6 +3,7 @@
 import ctypes
 import re, select, socket, sys
 import threading
+import time
 import pybonjour
 
 DEBUG = False
@@ -21,6 +22,7 @@ if not gphoto:
 
 gphoto.gp_context_new.restype = ctypes.c_void_p
 gphoto.gp_camera_init.argtypes = [ ctypes.c_void_p, ctypes.c_void_p ]
+gphoto.gp_context_unref.argtypes = [ ctypes.c_void_p ]
 gphoto.gp_abilities_list_lookup_model.argtypes = [ ctypes.c_void_p, ctypes.c_char_p ]
 gphoto.gp_result_as_string.restype = ctypes.c_char_p
 gphoto.gp_log_add_func.argtypes = [ ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p ]
@@ -52,7 +54,40 @@ def gphoto_check(result):
         raise GPhotoError(result, message)
     return result
 
-class PTPIPCamera:
+class Common:
+    log_label = 'Common'
+
+    def log(self, msg, debug=False):
+        if (debug and DEBUG) or (not debug):
+            print self.log_label, msg
+
+    def debug(self, msg):
+        self.log(msg, debug=True)
+    
+    def start(self):
+        def run():
+            self.log('started thread')
+            self.run()
+            self.log('finished thread')
+        self.log('starting thread')
+        self.thread = threading.Thread(target=run)
+        self.thread.start()
+    
+    def join(self, timeout=None):
+        if not self.thread.isAlive():
+            pass
+        elif timeout:
+            self.thread.join(timeout=timeout)
+        else:
+            self.thread.join()
+        return not self.thread.isAlive()
+
+    def shutdown(self):
+        pass
+
+class PTPIPCamera(Common):
+    log_label = 'PTPIPCamera'
+
     def __init__(self, target, guid):
         self.context = gphoto.gp_context_new()
         self.target = target
@@ -83,7 +118,7 @@ class PTPIPCamera:
 
     def connect(self):
         # allocate and initialise a new camera
-        print 'allocate camera'
+        self.debug('allocate camera')
         res = gphoto.gp_camera_new(ctypes.pointer(self.handle))
         gphoto_check(res)
       
@@ -93,51 +128,51 @@ class PTPIPCamera:
         
         # load abilities
         if not self.abilitylist:
-            print 'load abilities list'
+            self.debug('load abilities list')
             self.abilitylist = ctypes.c_void_p()
             gphoto.gp_abilities_list_new(ctypes.pointer(self.abilitylist))
             res = gphoto.gp_abilities_list_load(self.abilitylist)
             gphoto_check(res)
         
         # search for model abilities
-        print 'search abilities list'
+        self.debug('search abilities list')
         index = gphoto.gp_abilities_list_lookup_model(self.abilitylist, 'PTP/IP Camera')
         gphoto_check(index)
-        print 'found at', index
+        self.debug('found at %d' % index)
         
         # load abilities
-        print 'load abilities'
+        self.debug('load abilities')
         abilities = CameraAbilities()
         res = gphoto.gp_abilities_list_get_abilities(self.abilitylist, index, ctypes.pointer(abilities))
         gphoto_check(res)
 
         # set camera abilities
-        print 'set camera abilities'
+        self.debug('set camera abilities')
         res = gphoto.gp_camera_set_abilities(self.handle, abilities)
         gphoto_check(res)
 
         # load port list
         if not self.portlist:
-            print 'load port list'
+            self.debug('load port list')
             self.portlist = ctypes.c_void_p()
             gphoto.gp_port_info_list_new(ctypes.pointer(self.portlist))
             res = gphoto.gp_port_info_list_load(self.portlist)
             gphoto_check(res)
 
         # find port info entry
-        print 'search for port info'
+        self.debug('search for port info')
         index = gphoto.gp_port_info_list_lookup_path(self.portlist, self.encoded_path())
         gphoto_check(index)
-        print 'found at', index
+        self.debug('found at %d' % index)
 
         # load port info entry
-        print 'load port info'
+        self.debug('load port info')
         info = ctypes.c_void_p()
         res = gphoto.gp_port_info_list_get_info(self.portlist, index, ctypes.pointer(info))
         gphoto_check(res)
 
         # set the camera with the appropriate port info
-        print 'set camera port'
+        self.debug('set camera port')
         res = gphoto.gp_camera_set_port_info(self.handle, info)
         gphoto_check(res)
         
@@ -146,25 +181,168 @@ class PTPIPCamera:
             path = ctypes.c_char_p()
             res = gphoto.gp_port_info_get_path(info, ctypes.pointer(path))
             gphoto_check(res)
-            print path.value
+            self.debug(path.value)
 
         # connect to camera
-        print 'connecting...'
+        self.log('connecting...')
         res = gphoto.gp_camera_init(self.handle, self.context)
         gphoto_check(res)
-        print 'connected.'
+        self.log('connected.')
 
         self.connected = True
         return True
 
     def disconnect(self):
-        pass
+        res = gphoto.gp_camera_exit(self.handle, self.context)
+        gphoto_check(res)
+        res = gphoto.gp_camera_unref(self.handle)
+        gphoto_check(res)
+        res = gphoto.gp_context_unref(self.context)
+        gphoto_check(res)
+        # FIXME: gphoto PTP/IP does not close sockets properly; try to work around?
+
+    def _find_widget(self, label):
+        root = ctypes.c_void_p()
+        child = ctypes.c_void_p()
+        res = gphoto.gp_camera_get_config(self.handle, ctypes.pointer(root), self.context)
+        if res >= 0:
+            res = gphoto.gp_widget_get_child_by_name(root, ctypes.c_char_p(label), ctypes.pointer(child))
+            if res >= 0:
+                return (root, child)
+            else:
+                gphoto.gp_widget_free(root)
+        return None
+
+    def _free_widget(self, pair):
+        if pair:
+            (root, child) = pair
+            gphoto.gp_widget_free(root)
+
+    widget_types = { 0: 'window',
+                     1: 'section',
+                     2: 'text',
+                     3: 'range',
+                     4: 'toggle',
+                     5: 'radio',
+                     6: 'menu',
+                     7: 'button',
+                     8: 'date' }
+
+    def _widget_type(self, pair):
+        (root, child) = pair
+        w_type = ctypes.c_int()
+        res = gphoto.gp_widget_get_type(child, ctypes.pointer(w_type))
+        gphoto_check(res)
+        w_type = w_type.value
+        if w_type in self.widget_types:
+            return self.widget_types[w_type]
+        else:
+            return 'unknown'
+
+    def _widget_value(self, pair):
+        (root, child) = pair
+        w_type = self._widget_type(pair)
+        if w_type == 'text' or w_type == 'menu' or w_type == 'radio':
+            ptr = ctypes.c_char_p()
+            res = gphoto.gp_widget_get_value(child, ctypes.pointer(ptr))
+            gphoto_check(res)
+            return (w_type, ptr.value)
+        elif w_type == 'range':
+            top = ctypes.c_float()
+            bottom = ctypes.c_float()
+            step = ctypes.c_float()
+            value = ctypes.c_float()
+            res = gphoto.gp_widget_get_range(child, ctypes.pointer(bottom), ctypes.pointer(top), ctypes.pointer(step))
+            gphoto_check(res)
+            res = gphoto.gp_widget_get_value(child, ctypes.pointer(value))
+            gphoto_check(res)
+            return (w_type, value.value, bottom.value, top.value, step.value)
+        elif w_type == 'toggle' or w_type == 'date':
+            value = ctypes.c_int()
+            res = gphoto.gp_widget_get_value(child, ctypes.pointer(value))
+            gphoto_check(res)
+            return (w_type, value.value)
+        else:
+            return None
+    
+    def _widget_set(self, pair, value):
+        (root, child) = pair
+        w_type = self._widget_type(pair)
+        if w_type == 'text':
+            ptr = ctypes.c_char_p(value)
+            res = gphoto.gp_widget_set_value(child, ptr)
+            return (res >= 0)
+        elif w_type == 'range':
+            v = ctypes.c_float(value)
+            res = gphoto.gp_widget_get_value(child, ctypes.pointer(v))
+            return (res >= 0)
+        elif w_type == 'toggle' or w_type == 'date' or w_type == 'menu' or w_type == 'radio':
+            if w_type == 'toggle':
+                if value:
+                    value = 1
+                else:
+                    value = 0
+            v = ctypes.c_int(value)
+            res = gphoto.gp_widget_get_value(child, ctypes.pointer(v))
+            return (res >= 0)
+        else:
+            return False
+
+    def _widget_choices(self, pair):
+        (root, child) = pair
+        w_type = self._widget_type(pair)
+        if w_type == 'radio' or w_type == 'menu':
+            count = gphoto.gp_widget_count_choices(child)
+            if count > 0:
+                choices = []
+                for i in range(count):
+                    ptr = ctypes.c_char_p()
+                    res = gphoto.gp_widget_get_choice(child, i, ctypes.pointer(ptr))
+                    gphoto_check(res)
+                    choices.append(ptr.value)
+                return choices
+        return None
+
+    def get_config(self, label):
+        pair = self._find_widget(label)
+        value = None
+        if pair:
+            try:
+                value = self._widget_value(pair)
+            finally:
+                self._free_widget(pair)
+        return value
+
+    def get_config_choices(self, label):
+        pair = self._find_widget(label)
+        value = None
+        if pair:
+            try:
+                value = self._widget_choices(pair)
+            finally:
+                self._free_widget(pair)
+        return value
+
+    def set_config(self, label, value):
+        pair = self._find_widget(label)
+        result = False
+        if pair:
+            try:
+                result = self._widget_set(pair, value)
+                if result:
+                    res = gphoto.gp_camera_set_config(self.handle, pair[0], self.context)
+                    result = (res >= 0)
+            finally:
+                self._free_widget(pair)
+        return value
        
-class MDNSListener:
+class MDNSListener(Common):
+    log_label = 'MDNSListener'
+
     def __init__(self, callback=None):
         self.timeout = 5
         self.callback = callback
-        self.shutdown = False
+        self._shutdown = False
 
     def notify(self, ip, guid):
         if self.callback:
@@ -188,7 +366,7 @@ class MDNSListener:
                     fullname = hosttarget,
                     rrtype = pybonjour.kDNSServiceType_A,
                     callBack = callback)
-            print 'query', hosttarget
+            self.log('query %s' % hosttarget)
 
             try:
                 ready = select.select([query_sdRef], [], [], self.timeout)
@@ -214,7 +392,7 @@ class MDNSListener:
                 regtype,
                 replyDomain,
                 callback)
-        print 'resolve', serviceName
+        self.log('resolve %s' % serviceName)
 
         try:
             ready = select.select([resolve_sdRef], [], [], self.timeout)
@@ -223,69 +401,59 @@ class MDNSListener:
         finally:
             resolve_sdRef.close()
 
-    def search(self):
+    def run(self):
         def callback(sdRef, flags, interfaceIndex, errorCode, serviceName, regtype, replyDomain):
             self.browse_callback(sdRef, flags, interfaceIndex, errorCode, serviceName, regtype, replyDomain)
+        
+        self.log('started')
 
-        browse_sdRef = pybonjour.DNSServiceBrowse(regtype = "_ptp._tcp", callBack = callback)
+        self.browse_sdRef = pybonjour.DNSServiceBrowse(regtype = "_ptp._tcp", callBack = callback)
         try:
-            while not self.shutdown:
-                print 'searching...'
-                ready = select.select([browse_sdRef], [], [], self.timeout)
-                if browse_sdRef in ready[0]:
-                    pybonjour.DNSServiceProcessResult(browse_sdRef)
-        finally:
-            browse_sdRef.close()
-
-    def start(self):
-        def run():
-            self.search()
-        self.thread = threading.Thread(target=run)
-        self.thread.start()
-        print 'MDNSListener', 'started'
-
-    def join(self, timeout=None):
-        if not self.thread.isAlive():
+            while not self._shutdown:
+                if DEBUG:
+                    self.log('searching...')
+                ready = select.select([self.browse_sdRef], [], [], self.timeout)
+                if (not self._shutdown) and (self.browse_sdRef in ready[0]):
+                    pybonjour.DNSServiceProcessResult(self.browse_sdRef)
+        except select.error as e:
+            # happens if socket closed, i.e. shutdown
             pass
-        elif timeout:
-            self.thread.join(timeout=timeout)
-        else:
-            self.thread.join()
-        return not self.thread.isAlive()
+        finally:
+            # tidy up if shutdown has not been invoked
+            if not self._shutdown:
+                self.browse_sdRef.close()
 
-class Canon6DConnection:
+        self.log('shutdown')
+
+    def shutdown(self):
+        # signal shutdown and force close socket
+        self.log('signalling shutdown')
+        self._shutdown = True
+        self.browse_sdRef.close()
+
+class Canon6DConnection(Common):
+    log_label = 'Canon6DConnection'
+
     def __init__(self, ip, guid, callback):
         self.ip = ip
         self.guid = guid
         self.callback = callback
 
-    def connect(self):
-        print 'Canon6DConnection started to %s (%s)' % (self.ip, self.guid)
+    def run(self):
+        self.log('started %s (%s)' % (self.ip, self.guid))
         self.camera = PTPIPCamera(self.ip, self.guid)
         try:
             self.camera.connect()
-            print 'Canon6DConnection connected to %s (%s)' % (self.ip, self.guid)
+            self.log('connected to %s (%s)' % (self.ip, self.guid))
             self.callback(self.camera)
         except Exception as e:
-            print 'Canon6DConnection failed for %s (%s) - %s' % (self.ip, self.guid, str(e))
-
-    def start(self):
-        def run():
-            self.connect()
-        self.thread = threading.Thread(target=run)
-        self.thread.start()
-    
-    def join(self, timeout=None):
-        if not self.thread.isAlive():
-            pass
-        elif timeout:
-            self.thread.join(timeout=timeout)
-        else:
-            self.thread.join()
-        return not self.thread.isAlive()
-
-    def shutdown(self):
-        pass
+            self.log('failed for %s (%s) - %s' % (self.ip, self.guid, str(e)))
+        finally:
+            try:
+                self.camera.disconnect()
+            except:
+                pass
+        self.log('shutdown %s (%s)' % (self.ip, self.guid))
 
 class Canon6DConnector:
     def __init__(self, callback):
@@ -293,9 +461,10 @@ class Canon6DConnector:
         self.connections = []
 
     def connect(self, ip, guid):
-        connection = Canon6DConnection(ip, guid, self.callback)
-        connection.start()
-        self.connections.append(connection)
+        if len(self.connections) == 0:
+            connection = Canon6DConnection(ip, guid, self.callback)
+            connection.start()
+            self.connections.append(connection)
 
     def run(self):
         def callback(ip, guid):
@@ -323,21 +492,21 @@ class Canon6DConnector:
                     shutdown = True
 
         # shutdown
-        print 'shutdown'
         if mdns:
-            mdns.shutdown = True
+            mdns.shutdown()
         for c in self.connections:
             c.shutdown()
         sys.exit(0)
 
 def camera_main(camera):
     print 'camera_main', camera.guid
+    for i in range(4):
+        print 'aperture', camera.get_config('aperture'), camera.get_config_choices('aperture')
+        time.sleep(2)
 
 def main(args):
     connector = Canon6DConnector(camera_main)
     connector.run()
-    #ptp = PTPIPCamera('192.168.16.22', 'AF90AA13-9344-46EE-9751-ED6797E19F06')
-    #ptp.connect()
 
 if __name__ == "__main__":
     main(sys.argv[1:])
