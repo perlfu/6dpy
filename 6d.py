@@ -279,25 +279,50 @@ class PTPIPCamera(Common):
         else:
             return None
     
+    def _match_choice(self, pair, value):
+        choices = self._widget_choices(pair)
+        if isinstance(value, int):
+            if (value >= 0) and (value < len(choices)):
+                return choices[value]
+        for (i, c) in zip(range(len(choices)), choices):
+            try:
+                if c == str(value):
+                    return c
+                elif float(c) == float(value):
+                    return c
+                elif int(c) == int(value):
+                    return c
+            except:
+                pass
+        if isinstance(value, str):
+            return value
+        else:
+            return str(value)
+
     def _widget_set(self, pair, value):
         (root, child) = pair
         w_type = self._widget_type(pair)
-        if w_type == 'text':
-            ptr = ctypes.c_char_p(value)
-            res = gphoto.gp_widget_set_value(child, ptr)
-            return (res >= 0)
+        if w_type == 'toggle':
+            if value:
+                value = 1
+            else:
+                value = 0
         elif w_type == 'range':
-            v = ctypes.c_float(value)
-            res = gphoto.gp_widget_get_value(child, ctypes.pointer(v))
-            return (res >= 0)
-        elif w_type == 'toggle' or w_type == 'date' or w_type == 'menu' or w_type == 'radio':
-            if w_type == 'toggle':
-                if value:
-                    value = 1
-                else:
-                    value = 0
+            value = float(value)
+        elif (w_type == 'radio') or (w_type == 'menu'):
+            value = self._match_choice(pair, value)
+
+        if isinstance(value, int):
             v = ctypes.c_int(value)
-            res = gphoto.gp_widget_get_value(child, ctypes.pointer(v))
+            res = gphoto.gp_widget_set_value(child, ctypes.pointer(v))
+            return (res >= 0)
+        elif isinstance(value, float):
+            v = ctypes.c_float(float(value))
+            res = gphoto.gp_widget_set_value(child, ctypes.pointer(v))
+            return (res >= 0)
+        elif isinstance(value, str):
+            v = ctypes.c_char_p(value)
+            res = gphoto.gp_widget_set_value(child, v)
             return (res >= 0)
         else:
             return False
@@ -339,11 +364,13 @@ class PTPIPCamera(Common):
             if result:
                 res = gphoto.gp_camera_set_config(self.handle, pair[0], self.context)
                 result = (res >= 0)
-        return value
+        return result
 
     known_widgets = [
         'uilock',
         'bulb',
+        'drivemode',
+        'focusmode',
         'autofocusdrive',
         'manualfocusdrive',
         'eoszoom',
@@ -383,7 +410,8 @@ class PTPIPCamera(Common):
         'picturestyle',
         'shutterspeed',
         'bracketmode',
-        'aeb' ]
+        'aeb',
+        'aperture' ]
 
     def list_config(self):
         config = {}
@@ -555,7 +583,7 @@ class Canon6DConnector:
 
 def camera_main(camera):
     print 'camera_main', camera.guid
-    #camera.set_config('capture', 1)
+    camera.set_config('capture', 1)
     config = camera.list_config()
     print 'got config'
     for k in sorted(config.keys()):
@@ -564,6 +592,10 @@ def camera_main(camera):
             print k, v, camera.get_config_choices(k) 
         else:
             print k, v
+    #result = camera.set_config('eosremoterelease', 'Press 3')
+    result = camera.set_config('aperture', '8.0')
+    print 'result', result
+    time.sleep(1)
 
 def main(args):
     connector = Canon6DConnector(camera_main)
