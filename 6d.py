@@ -96,6 +96,9 @@ class PTPIPCamera(Common):
         self.portlist = None
         self.abilitylist = None
         self.connected = False
+        self.cached_root = None
+        self.cached_time = 0
+        self.cache_expiry = 2 # seconds
 
     def encoded_path(self):
         return "ptpip:" + self.target
@@ -193,6 +196,7 @@ class PTPIPCamera(Common):
         return True
 
     def disconnect(self):
+        self._clear_cache()
         res = gphoto.gp_camera_exit(self.handle, self.context)
         gphoto_check(res)
         res = gphoto.gp_camera_unref(self.handle)
@@ -201,22 +205,32 @@ class PTPIPCamera(Common):
         gphoto_check(res)
         # FIXME: gphoto PTP/IP does not close sockets properly; try to work around?
 
+    def _root_widget(self):
+        now = time.time()
+        if (not self.cached_root) or abs(now - self.cached_time) > self.cache_expiry:
+            if not self.cached_root:
+                gphoto.gp_widget_free(self.cached_root)
+                self.cached_root = None
+            root = ctypes.c_void_p()
+            res = gphoto.gp_camera_get_config(self.handle, ctypes.pointer(root), self.context)
+            if res >= 0:
+                self.cached_root = root
+                self.cached_time = now
+        return self.cached_root
+
+    def _clear_cache(self):
+        if self.cached_root:
+            gphoto.gp_widget_free(self.cached_root)
+            self.cached_root = None
+
     def _find_widget(self, label):
-        root = ctypes.c_void_p()
-        child = ctypes.c_void_p()
-        res = gphoto.gp_camera_get_config(self.handle, ctypes.pointer(root), self.context)
-        if res >= 0:
+        root = self._root_widget()
+        if root:
+            child = ctypes.c_void_p()
             res = gphoto.gp_widget_get_child_by_name(root, ctypes.c_char_p(label), ctypes.pointer(child))
             if res >= 0:
                 return (root, child)
-            else:
-                gphoto.gp_widget_free(root)
         return None
-
-    def _free_widget(self, pair):
-        if pair:
-            (root, child) = pair
-            gphoto.gp_widget_free(root)
 
     widget_types = { 0: 'window',
                      1: 'section',
@@ -307,34 +321,75 @@ class PTPIPCamera(Common):
         pair = self._find_widget(label)
         value = None
         if pair:
-            try:
-                value = self._widget_value(pair)
-            finally:
-                self._free_widget(pair)
+            value = self._widget_value(pair)
         return value
 
     def get_config_choices(self, label):
         pair = self._find_widget(label)
         value = None
         if pair:
-            try:
-                value = self._widget_choices(pair)
-            finally:
-                self._free_widget(pair)
+            value = self._widget_choices(pair)
         return value
 
     def set_config(self, label, value):
         pair = self._find_widget(label)
         result = False
         if pair:
-            try:
-                result = self._widget_set(pair, value)
-                if result:
-                    res = gphoto.gp_camera_set_config(self.handle, pair[0], self.context)
-                    result = (res >= 0)
-            finally:
-                self._free_widget(pair)
+            result = self._widget_set(pair, value)
+            if result:
+                res = gphoto.gp_camera_set_config(self.handle, pair[0], self.context)
+                result = (res >= 0)
         return value
+
+    known_widgets = [
+        'uilock',
+        'bulb',
+        'autofocusdrive',
+        'manualfocusdrive',
+        'eoszoom',
+        'eoszoomposition',
+        'eosviewfinder',
+        'eosremoterelease',
+        'serialnumber',
+        'manufacturer',
+        'cameramodel',
+        'deviceversion',
+        'model',
+        'batterylevel',
+        'lensname',
+        'eosserialnumber',
+        'shuttercounter',
+        'availableshots',
+        'reviewtime',
+        'output',
+        'evfmode',
+        'ownername',
+        'artist',
+        'copyright'
+        'autopoweroff',
+        'imageformat',
+        'imageformatsd',
+        'iso',
+        'whitebalance',
+        'colortemperature',
+        'whitebalanceadjusta',
+        'whitebalanceadjustb',
+        'whitebalancexa',
+        'whitebalancexb',
+        'colorspace'
+        'exposurecompensation',
+        'focusmode',
+        'autoexposuremode',
+        'picturestyle',
+        'shutterspeed',
+        'bracketmode',
+        'aeb' ]
+
+    def list_config(self):
+        config = {}
+        for k in self.known_widgets:
+            config[k] = self.get_config(k)
+        return config
        
 class MDNSListener(Common):
     log_label = 'MDNSListener'
@@ -500,9 +555,15 @@ class Canon6DConnector:
 
 def camera_main(camera):
     print 'camera_main', camera.guid
-    for i in range(4):
-        print 'aperture', camera.get_config('aperture'), camera.get_config_choices('aperture')
-        time.sleep(2)
+    #camera.set_config('capture', 1)
+    config = camera.list_config()
+    print 'got config'
+    for k in sorted(config.keys()):
+        v = config[k]
+        if v and (v[0] == 'radio'):
+            print k, v, camera.get_config_choices(k) 
+        else:
+            print k, v
 
 def main(args):
     connector = Canon6DConnector(camera_main)
