@@ -1,9 +1,11 @@
-6dpy 
+6dpy
 ----
 
-6dpy is a small harness to simplify Python scripting operations on a 
-Canon 6D DSLR camera via PTP/IP and WLAN/Wifi.  It may also be useful
-for other PTP/IP cameras with some minor modifications.
+6dpy is a small prototype harness to simplify Python scripting operations
+on a Canon 6D DSLR camera via PTP/IP and WLAN/Wifi.  It may also be useful
+for other PTP/IP cameras with some minor modifications.  In practice this
+code is just a proof of concept and is not stable mainly due to issues
+with libgphoto2's implementation of PTP/IP.
 
 The harness deals with locating and connecting to cameras. MDNS is used to 
 search for the camera(s) in EOS Utility mode.  A connection is then 

@@ -9,6 +9,16 @@ import pybonjour
 DEBUG = False
 DLLs = ['libgphoto2.so.6', 'libgphoto2.6.dylib']
 
+GP_CAPTURE_IMAGE            = 0
+GP_CAPTURE_MOVIE            = 1
+GP_CAPTURE_SOUND            = 2
+
+GP_EVENT_UNKNOWN            = 0
+GP_EVENT_TIMEOUT            = 1
+GP_EVENT_FILE_ADDED         = 2
+GP_EVENT_FOLDER_ADDED       = 3
+GP_EVENT_CAPTURE_COMPLETE   = 4
+
 gphoto = None
 for dll in DLLs:
     if not gphoto:
@@ -19,7 +29,7 @@ for dll in DLLs:
 
 if not gphoto:
     raise Exception('could not locate gphoto2 dynamic library')
-
+    
 gphoto.gp_context_new.restype = ctypes.c_void_p
 gphoto.gp_camera_init.argtypes = [ ctypes.c_void_p, ctypes.c_void_p ]
 gphoto.gp_context_unref.argtypes = [ ctypes.c_void_p ]
@@ -31,6 +41,9 @@ gphoto.gp_camera_set_abilities.argtypes = [ ctypes.c_void_p, ctypes.Structure ]
 
 class CameraAbilities(ctypes.Structure):
     _fields_ = [('model', (ctypes.c_char * 128)), ('data', (ctypes.c_char * 4096))]
+
+class CameraFilePath(ctypes.Structure):
+    _fields_ = [('name', (ctypes.c_char * 128)), ('folder', (ctypes.c_char * 1024))]
 
 class GPhotoError(Exception):
     def __init__(self, result, message):
@@ -411,14 +424,50 @@ class PTPIPCamera(Common):
         'shutterspeed',
         'bracketmode',
         'aeb',
-        'aperture' ]
+        'aperture',
+        'capturetarget' ]
 
     def list_config(self):
         config = {}
         for k in self.known_widgets:
             config[k] = self.get_config(k)
         return config
-       
+
+    # XXX: this hangs waiting for response from camera
+    def trigger_capture(self):
+        res = gphoto.gp_camera_trigger_capture(self.handle, self.context)
+        try:
+            gphoto_check(res)
+            return True
+        except GPhotoError as e:
+            self.log(str(e))
+            return False
+
+    # XXX: this hangs waiting for response from camera
+    def capture(self, capture_type=GP_CAPTURE_IMAGE):
+        path = CameraFilePath()
+        res = gphoto.gp_camera_capture(self.handle, ctypes.c_int(capture_type), ctypes.pointer(path), ctypes.c_void_p())
+        try:
+            gphoto_check(res)
+            return (path.folder, path.name)
+        except GPhotoError as e:
+            self.log(str(e))
+            return None
+
+    def wait_for_event(self, timeout):
+        ev_type = ctypes.c_int()
+        data = ctypes.c_void_p()
+        res = gphoto.gp_camera_capture(self.camera, 
+                ctypes.c_int(timeout),
+                ctypes.pointer(ev_type),
+                ctypes.pointer(data), self.context)
+        try:
+            gphoto_check(res)
+            return ev_type.value
+        except GPhotoError as e:
+            self.log(str(e))
+            return None
+
 class MDNSListener(Common):
     log_label = 'MDNSListener'
 
@@ -584,6 +633,7 @@ class Canon6DConnector:
 def camera_main(camera):
     print 'camera_main', camera.guid
     camera.set_config('capture', 1)
+    
     config = camera.list_config()
     print 'got config'
     for k in sorted(config.keys()):
@@ -592,9 +642,13 @@ def camera_main(camera):
             print k, v, camera.get_config_choices(k) 
         else:
             print k, v
-    #result = camera.set_config('eosremoterelease', 'Press 3')
+
     result = camera.set_config('aperture', '8.0')
-    print 'result', result
+    print 'set aperture', result
+    result = camera.set_config('capturetarget', 'Memory card')
+    print 'set memory card', result
+    result = camera.set_config('eosremoterelease', 'Immediate')
+    print 'trigger capture', result
     time.sleep(1)
 
 def main(args):
