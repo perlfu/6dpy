@@ -405,7 +405,7 @@ class PTPIPCamera(Common):
         'evfmode',
         'ownername',
         'artist',
-        'copyright'
+        'copyright',
         'autopoweroff',
         'imageformat',
         'imageformatsd',
